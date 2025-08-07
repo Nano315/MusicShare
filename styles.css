@@ -59,6 +59,10 @@ header h1 {
   object-fit: cover;
 }
 
+.song-title {
+  font-weight: 700;
+}
+
 /* ---------- Add-song section ---------- */
 #add-song {
   margin-top: 2rem;
