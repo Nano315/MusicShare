@@ -16,7 +16,9 @@
       rel="stylesheet"
     />
 
-    <link rel="stylesheet" href="styles.css" />
+    <!-- ?v= : augmenter le numéro (ici et pour script.js en bas) à chaque modif
+         du CSS ou du JS, sinon les navigateurs gardent l'ancienne version en cache -->
+    <link rel="stylesheet" href="styles.css?v=2" />
   </head>
   <body>
     <!-- Header / Logo -->
@@ -114,6 +116,6 @@
       </section>
     </main>
 
-    <script type="module" src="script.js"></script>
+    <script type="module" src="script.js?v=2"></script>
   </body>
 </html>
