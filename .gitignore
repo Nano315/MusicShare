@@ -1,0 +1,3 @@
+# Base et copies Firestore de développement (données réelles : jamais dans git)
+server/data/
+server/.env.dev

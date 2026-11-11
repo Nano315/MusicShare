@@ -18,7 +18,7 @@
 
     <!-- ?v= : augmenter le numéro (ici et pour script.js en bas) à chaque modif
          du CSS ou du JS, sinon les navigateurs gardent l'ancienne version en cache -->
-    <link rel="stylesheet" href="styles.css?v=2" />
+    <link rel="stylesheet" href="styles.css?v=3" />
   </head>
   <body>
     <!-- Header / Logo -->
@@ -43,6 +43,49 @@
       <!-- Message (un <p> par paragraphe) -->
       <article class="letter">
       </article>
+
+      <!-- Chat -->
+      <section id="chat" class="chat" aria-labelledby="chat-title">
+        <h2 id="chat-title">Messages</h2>
+
+        <div class="chat-card">
+          <ol id="chat-list" class="chat-list" role="log" aria-busy="true"></ol>
+          <p id="chat-status" class="chat-status">Chargement des messages…</p>
+
+          <form id="chat-form" class="chat-form" novalidate>
+            <fieldset class="chat-sender">
+              <legend class="visually-hidden">Envoyé par</legend>
+              <div class="sharer-options">
+                <label class="sharer-option">
+                  <input type="radio" name="sender" value="Valentin" />
+                  <span>Valentin</span>
+                </label>
+                <label class="sharer-option">
+                  <input type="radio" name="sender" value="Iman" />
+                  <span>Iman</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="chat-compose">
+              <label class="visually-hidden" for="chat-text">Message</label>
+              <textarea
+                id="chat-text"
+                rows="1"
+                maxlength="1000"
+                enterkeyhint="send"
+                placeholder="Écris un message…"
+              ></textarea>
+              <button type="submit" id="chat-send" class="chat-send" aria-label="Envoyer">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h13M13 6l6 6-6 6" />
+                </svg>
+              </button>
+            </div>
+            <p id="chat-error" class="form-status is-error" role="status"></p>
+          </form>
+        </div>
+      </section>
 
       <!-- Song list -->
       <section class="songs" aria-labelledby="songs-title">
@@ -115,6 +158,6 @@
       </section>
     </main>
 
-    <script type="module" src="script.js?v=2"></script>
+    <script type="module" src="script.js?v=3"></script>
   </body>
 </html>

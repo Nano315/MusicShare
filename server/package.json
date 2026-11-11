@@ -1,0 +1,13 @@
+{
+  "name": "lastlink-server",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --env-file-if-exists=.env.dev server.mjs",
+    "test": "node --test"
+  }
+}

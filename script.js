@@ -1,22 +1,7 @@
 // script.js  – module ES, donc chargé avec type="module" ----------------
 
 // ---------------------------------------------------
-// 1)  Imports Firebase v12 (CDN)
-// ---------------------------------------------------
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-analytics.js";
-import {
-    getFirestore,
-    collection,
-    addDoc,
-    serverTimestamp,
-    query,
-    orderBy,
-    onSnapshot
-} from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
-
-// ---------------------------------------------------
-// 2)  Config de TON projet  (corrige storageBucket !)
+// 1)  Firebase : ne sert plus qu'aux statistiques (Analytics)
 // ---------------------------------------------------
 const firebaseConfig = {
     apiKey: "AIzaSyABWMf5IYZbIQfMVrsz8TgitSg8D9dVTRs",
@@ -28,16 +13,35 @@ const firebaseConfig = {
     measurementId: "G-Q12TR5LHP2"
 };
 
-// ---------------------------------------------------
-// 3)  Initialisation Firebase
-// ---------------------------------------------------
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);        // facultatif, conserve si utile
-const db = getFirestore(app);
-const songsCol = collection(db, "songs");
+// Chargées à part : si un bloqueur de pub les refuse, le site marche quand même
+Promise.all([
+    import("https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js"),
+    import("https://www.gstatic.com/firebasejs/12.0.0/firebase-analytics.js")
+])
+    .then(([{ initializeApp }, { getAnalytics }]) => getAnalytics(initializeApp(firebaseConfig)))
+    .catch(() => { });
 
 // ---------------------------------------------------
-// 4)  Données locales (pochettes) et helpers
+// 2)  Serveur LastLink (homelab) : chansons + messages
+// ---------------------------------------------------
+// En local (tests), on parle au serveur lancé sur la machine
+const API = ["localhost", "127.0.0.1"].includes(location.hostname)
+    ? "http://localhost:8136"
+    : "https://lastlink.nanodev.app";
+
+async function api(path, body) {
+    const res = await fetch(API + path, body && {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status });
+    return data;
+}
+
+// ---------------------------------------------------
+// 3)  Données locales (pochettes) et helpers
 // ---------------------------------------------------
 const covers = [
     "assets/photos/image.png",
@@ -114,20 +118,47 @@ function parseUrl(text) {
 // "aujourd’hui", "hier", "il y a 3 jours", puis "12 mars" (+ l'année si besoin)
 const relative = new Intl.RelativeTimeFormat("fr", { numeric: "auto" });
 const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const daysAgo = date => Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
+const sameYear = date => date.getFullYear() === new Date().getFullYear();
 
 function formatDate(date) {
-    const today = new Date();
-    const days = Math.round((startOfDay(today) - startOfDay(date)) / 86400000);
+    const days = daysAgo(date);
     if (days < 7) return relative.format(-Math.max(days, 0), "day");
     return date.toLocaleDateString("fr-FR", {
         day: "numeric",
         month: "long",
-        year: date.getFullYear() === today.getFullYear() ? undefined : "numeric"
+        year: sameYear(date) ? undefined : "numeric"
     });
 }
 
+// Heure des messages : "14:32", "hier, 14:32", "lundi, 14:32", puis "12 mars, 14:32"
+const hourFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
+
+function formatTime(date) {
+    const days = daysAgo(date);
+    const hour = hourFormat.format(date);
+    if (days <= 0) return hour;
+    if (days === 1) return `hier, ${hour}`;
+    const day = days < 7
+        ? date.toLocaleDateString("fr-FR", { weekday: "long" })
+        : date.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: sameYear(date) ? undefined : "numeric" });
+    return `${day}, ${hour}`;
+}
+
+const byId = (parent, id) => parent.querySelector(`[data-id="${CSS.escape(id)}"]`);
+
+// Copie de ce qui est affiché, gardée sur l'appareil : montrée si le serveur ne répond pas
+const CACHE_KEY = "lastlink-cache";
+const state = { songs: [], messages: [] };
+
+function saveCache() {
+    try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(state));
+    } catch { }
+}
+
 // ---------------------------------------------------
-// 5)  Références DOM
+// 4)  Références DOM
 // ---------------------------------------------------
 const list = document.getElementById("song-list");
 const songCount = document.getElementById("song-count");
@@ -139,15 +170,22 @@ const sharerField = form.querySelector("fieldset");
 const submitBtn = document.getElementById("add-song-btn");
 const formStatus = document.getElementById("form-status");
 
-// ---------------------------------------------------
-// 6)  Rendu d’un document
-// ---------------------------------------------------
-function createSong(doc, isNew) {
-    const s = doc.data();
+const chat = document.getElementById("chat");
+const chatList = document.getElementById("chat-list");
+const chatStatus = document.getElementById("chat-status");
+const chatForm = document.getElementById("chat-form");
+const chatSender = chatForm.querySelector("fieldset");
+const chatText = document.getElementById("chat-text");
+const chatSend = document.getElementById("chat-send");
+const chatError = document.getElementById("chat-error");
 
+// ---------------------------------------------------
+// 5)  Rendu des chansons
+// ---------------------------------------------------
+function createSong(s, isNew) {
     const li = document.createElement("li");
     li.className = isNew ? "song is-new" : "song";
-    li.dataset.id = doc.id;
+    li.dataset.id = s.id;
     li.innerHTML = `
     <a class="song-link" target="_blank" rel="noopener noreferrer">
       <img class="song-cover" width="64" height="64" alt="" loading="lazy" decoding="async">
@@ -171,14 +209,7 @@ function createSong(doc, isNew) {
     };
     img.src = thumbOf(cover);
 
-    updateSong(li, doc);
-    return li;
-}
-
-// Textes (via textContent : un titre ne peut pas injecter de HTML)
-function updateSong(li, doc) {
-    const s = doc.data({ serverTimestamps: "estimate" });
-
+    // Textes (via textContent : un titre ne peut pas injecter de HTML)
     const link = li.querySelector(".song-link");
     const url = parseUrl(s.url);
     if (url) link.href = url.href;
@@ -190,72 +221,196 @@ function updateSong(li, doc) {
     sharer.textContent = s.sharedBy ?? "";
     sharer.dataset.sharer = s.sharedBy ?? "";
 
-    const date = s.createdAt?.toDate();
+    const date = new Date(s.createdAt);
     const time = li.querySelector(".song-date");
-    time.textContent = date ? formatDate(date) : "";
-    if (date) time.dateTime = date.toISOString();
+    if (!Number.isNaN(date.getTime())) {
+        time.textContent = formatDate(date);
+        time.dateTime = date.toISOString();
+    }
+    return li;
+}
+
+function renderSongs(songs) {
+    state.songs = songs;
+    list.replaceChildren(...songs.map(s => createSong(s, false)));
+    list.setAttribute("aria-busy", "false");
+    showSongCount();
+}
+
+// Chanson reçue en direct ou ajoutée depuis cette page (jamais en double)
+function addSong(s) {
+    if (byId(list, s.id)) return;
+    list.prepend(createSong(s, true));
+    showSongCount();
+    state.songs.unshift(s);
+    saveCache();
+}
+
+function showSongCount() {
+    const n = list.children.length;
+    songCount.textContent = n || "";
+    listStatus.classList.remove("is-error");
+    listStatus.textContent = "Pas encore de chanson. Ajoute la première !";
+    listStatus.hidden = n > 0;
 }
 
 // ---------------------------------------------------
-// 7)  Écoute Firestore temps-réel
+// 6)  Rendu des messages
 // ---------------------------------------------------
-const q = query(songsCol, orderBy("createdAt", "desc"));
-let loaded = false;
+function createMessage(m) {
+    const li = document.createElement("li");
+    li.className = "msg";
+    li.dataset.id = m.id;
+    li.dataset.from = m.sentBy;
+    li.innerHTML = `<p class="msg-text"></p><p class="msg-meta"><span class="msg-from"></span><time class="msg-time"></time></p>`;
+    li.querySelector(".msg-text").textContent = m.text;
+    li.querySelector(".msg-from").textContent = m.sentBy;
 
-onSnapshot(q, snap => {
-    if (!loaded) list.replaceChildren();        // enlève les lignes de chargement
+    const date = new Date(m.createdAt);
+    const time = li.querySelector("time");
+    time.textContent = formatTime(date);
+    time.dateTime = date.toISOString();
+    return li;
+}
 
-    // On n'applique que les changements : les autres lignes ne bougent pas
-    snap.docChanges().forEach(({ type, doc, oldIndex, newIndex }) => {
-        if (type === "added") {
-            list.insertBefore(createSong(doc, loaded), list.children[newIndex] ?? null);
-            return;
-        }
-        const li = list.children[oldIndex];
-        if (type === "removed") {
-            li.remove();
-            return;
-        }
-        updateSong(li, doc);                    // "modified" (ex. date confirmée par le serveur)
-        if (newIndex !== oldIndex) {
-            li.remove();
-            list.insertBefore(li, list.children[newIndex] ?? null);
-        }
-    });
+// Plusieurs messages d'affilée de la même personne : son prénom une seule fois
+function markFollowUp(li) {
+    const prev = li.previousElementSibling;
+    const gap = prev && new Date(li.querySelector("time").dateTime) - new Date(prev.querySelector("time").dateTime);
+    li.classList.toggle("is-follow-up", !!prev && prev.dataset.from === li.dataset.from && gap < 10 * 60000);
+}
 
-    loaded = true;
-    list.setAttribute("aria-busy", "false");
-    songCount.textContent = snap.size || "";
-    listStatus.classList.remove("is-error");
-    listStatus.textContent = "Pas encore de chanson. Ajoute la première !";
-    listStatus.hidden = !snap.empty;
-},
-    err => {
-        console.error("🔥 Firestore snapshot error:", err);
-        list.replaceChildren();
-        listStatus.classList.add("is-error");
-        listStatus.textContent = "Impossible de charger les chansons. Vérifie ta connexion puis recharge la page.";
-        listStatus.hidden = false;
+const nearBottom = () => chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 80;
+const toBottom = () => {
+    chatList.scrollTop = chatList.scrollHeight;
+};
+
+function renderMessages(messages) {
+    state.messages = messages;
+    chatList.replaceChildren(...messages.map(createMessage));
+    for (const li of chatList.children) markFollowUp(li);
+    chatList.setAttribute("aria-busy", "false");
+    showChatEmpty();
+    toBottom();
+}
+
+function addMessage(m) {
+    if (byId(chatList, m.id)) return;
+    const follow = nearBottom() || m.sentBy === me;  // on ne tire pas la liste sous les yeux de quelqu'un qui relit
+    const li = createMessage(m);
+    li.classList.add("is-new");
+    chatList.append(li);
+    markFollowUp(li);
+    showChatEmpty();
+    if (follow) toBottom();
+    state.messages = [...state.messages, m].slice(-300);    // le serveur en renvoie 300 au plus
+    saveCache();
+}
+
+function showChatEmpty() {
+    chatStatus.classList.remove("is-error");
+    chatStatus.textContent = "Pas encore de message. Écris le premier !";
+    chatStatus.hidden = chatList.children.length > 0;
+}
+
+// ---------------------------------------------------
+// 7)  Chargement, copie hors ligne et direct
+// ---------------------------------------------------
+let shown = false;                              // quelque chose est affiché (copie ou serveur)
+let syncing = false;
+const queued = [];
+
+// Ce qui arrive en direct pendant un chargement est appliqué juste après
+function apply(type, item) {
+    if (syncing) return queued.push([type, item]);
+    if (type === "song") addSong(item);
+    else addMessage(item);
+}
+
+async function sync() {
+    syncing = true;
+    try {
+        const [{ songs }, { messages }] = await Promise.all([api("/api/songs"), api("/api/messages")]);
+        renderSongs(songs);
+        renderMessages(messages);
+        shown = true;
+        saveCache();
+    } catch (err) {
+        console.error(err);
+        showOffline();
+    } finally {
+        syncing = false;
+        for (const [type, item] of queued.splice(0)) apply(type, item);
     }
-);
+}
+
+// Serveur injoignable : on garde la dernière liste vue sur l'appareil, sinon on le dit
+function showOffline() {
+    if (shown) {
+        listStatus.textContent = chatStatus.textContent = "Serveur injoignable pour l’instant : affichage de ta dernière visite.";
+        listStatus.hidden = chatStatus.hidden = false;
+        return;
+    }
+    list.replaceChildren();
+    list.setAttribute("aria-busy", "false");
+    chatList.setAttribute("aria-busy", "false");
+    listStatus.textContent = "Impossible de charger les chansons pour l’instant. Réessaie dans un moment.";
+    chatStatus.textContent = "Impossible de charger les messages pour l’instant.";
+    for (const status of [listStatus, chatStatus]) {
+        status.classList.add("is-error");
+        status.hidden = false;
+    }
+}
+
+let interrupted = false;
+
+function connect() {
+    const live = new EventSource(API + "/api/events");
+    live.addEventListener("song", e => apply("song", JSON.parse(e.data)));
+    live.addEventListener("message", e => apply("message", JSON.parse(e.data)));
+    // Connexion revenue (réseau, téléphone en veille…) : on rattrape ce qui a été manqué
+    live.addEventListener("open", () => {
+        if (interrupted) sync();
+        interrupted = false;
+    });
+    live.addEventListener("error", () => {
+        interrupted = true;
+        // Le navigateur abandonne si le serveur répond une erreur (homelab éteint…) : on relance nous-mêmes
+        if (live.readyState === EventSource.CLOSED) setTimeout(connect, 15000);
+    });
+}
 
 // ---------------------------------------------------
-// 8)  Sélecteur Valentin / Iman (mémorisé sur l'appareil)
+// 8)  Valentin ou Iman ? (mémorisé sur l'appareil, pour les chansons et le chat)
 // ---------------------------------------------------
 const SHARER_KEY = "lastlink-sharer";
+let me = "";
+
+function setMe(person, remember = true) {
+    me = person;
+    for (const radio of [...form.elements.sharer, ...chatForm.elements.sender]) radio.checked = radio.value === person;
+    chat.dataset.me = person;                   // ses propres messages passent à droite
+    if (!remember) return;
+    try {
+        localStorage.setItem(SHARER_KEY, person);
+    } catch { }
+}
 
 try {
     const saved = localStorage.getItem(SHARER_KEY);
-    for (const radio of form.elements.sharer) radio.checked = radio.value === saved;
+    if (saved === "Valentin" || saved === "Iman") setMe(saved, false);
 } catch {
     // stockage indisponible (navigation privée…) : on choisit à chaque fois
 }
 
 sharerField.addEventListener("change", e => {
     showError(sharerField, "");
-    try {
-        localStorage.setItem(SHARER_KEY, e.target.value);
-    } catch { }
+    setMe(e.target.value);
+});
+
+chatSender.addEventListener("change", e => {
+    chatError.textContent = "";
+    setMe(e.target.value);
 });
 
 // ---------------------------------------------------
@@ -339,7 +494,7 @@ function setStatus(message, isError = false) {
 }
 
 // ---------------------------------------------------
-// 11)  Soumission du formulaire
+// 11)  Ajout d'une chanson
 // ---------------------------------------------------
 form.onsubmit = async e => {
     e.preventDefault();
@@ -361,25 +516,87 @@ form.onsubmit = async e => {
     submitBtn.disabled = true;
     submitBtn.textContent = "Ajout…";
     try {
-        const ref = await addDoc(songsCol, {
-            name,
-            url: url.href,
-            sharedBy,
-            cover: randCover(),
-            createdAt: serverTimestamp()
-        });
+        const { song } = await api("/api/songs", { name, url: url.href, sharedBy, cover: randCover() });
+        addSong(song);
         urlInput.value = "";
         nameInput.value = "";
         if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur(); // ferme le clavier
         setStatus("Chanson ajoutée !");
 
         // Fait défiler jusqu'à la nouvelle chanson si elle n'est pas visible
-        [...list.children].find(li => li.dataset.id === ref.id)?.scrollIntoView({ block: "nearest" });
+        byId(list, song.id)?.scrollIntoView({ block: "nearest" });
     } catch (err) {
         console.error(err);
-        setStatus("L’ajout n’a pas marché. Vérifie ta connexion puis réessaie.", true);
+        setStatus(err.status === 429
+            ? "Beaucoup d’ajouts d’un coup : réessaie dans une minute."
+            : "L’ajout n’a pas marché. Vérifie ta connexion puis réessaie.", true);
     } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = "Ajouter la chanson";
     }
 };
+
+// ---------------------------------------------------
+// 12)  Chat
+// ---------------------------------------------------
+chatForm.onsubmit = async e => {
+    e.preventDefault();
+    const text = chatText.value.trim();
+    const sentBy = chatForm.elements.sender.value;
+    if (!sentBy) {
+        chatError.textContent = "Choisis qui écrit le message.";
+        chatForm.elements.sender[0].focus();
+        return;
+    }
+    if (!text || chatSend.disabled) return;
+
+    chatSend.disabled = true;
+    try {
+        const { message } = await api("/api/messages", { text, sentBy });
+        addMessage(message);
+        chatText.value = "";
+        fitText();
+        chatError.textContent = "";
+    } catch (err) {
+        console.error(err);
+        chatError.textContent = err.status === 429
+            ? "Beaucoup de messages d’un coup : réessaie dans une minute."
+            : "Le message n’est pas parti. Vérifie ta connexion puis réessaie.";
+    } finally {
+        chatSend.disabled = false;
+    }
+};
+
+// Entrée envoie, Maj + Entrée va à la ligne
+chatText.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        chatForm.requestSubmit();
+    }
+});
+
+// La zone de texte grandit avec le message (le CSS fixe la hauteur maximale)
+function fitText() {
+    chatText.style.height = "auto";
+    chatText.style.height = chatText.scrollHeight + chatText.offsetHeight - chatText.clientHeight + "px";
+}
+
+chatText.addEventListener("input", () => {
+    chatError.textContent = "";
+    fitText();
+});
+
+// ---------------------------------------------------
+// 13)  C'est parti : copie de la dernière visite tout de suite, puis le serveur
+// ---------------------------------------------------
+try {
+    const cached = JSON.parse(localStorage.getItem(CACHE_KEY));
+    if (Array.isArray(cached?.songs) && Array.isArray(cached?.messages)) {
+        renderSongs(cached.songs);
+        renderMessages(cached.messages);
+        shown = true;
+    }
+} catch { }
+
+sync();
+connect();
