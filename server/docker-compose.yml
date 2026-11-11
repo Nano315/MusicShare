@@ -1,5 +1,5 @@
 # Compose de production — homelab : ~/services/lastlink/
-# LastLink : chansons + chat du site (qui reste sur Vercel), sur
+# LastLink : chansons + chat du site (GitHub Pages, copie sur Vercel), sur
 # https://lastlink.nanodev.app (tunnel Cloudflare) + http://homelab:8136.
 services:
   lastlink:
@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     environment:
       ALLOWED_ORIGINS: https://musicshare-blush.vercel.app,https://nano315.github.io
-      FRONT_URL: https://musicshare-blush.vercel.app
+      FRONT_URL: https://nano315.github.io/MusicShare/   # où renvoie https://lastlink.nanodev.app/
     ports:
       - "8136:8136"           # LAN + Tailscale ; internet via cloudflared (réseau climhub_default)
     volumes:
