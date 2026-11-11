@@ -4,9 +4,9 @@
 
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { createReadStream, mkdirSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -146,10 +146,28 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
             ) ORDER BY createdAt, r
         `),
         addMessage: db.prepare("INSERT INTO messages (id, text, sent_by, created_at) VALUES (?, ?, ?, ?)"),
-        count: db.prepare("SELECT (SELECT COUNT(*) FROM songs) AS songs, (SELECT COUNT(*) FROM messages) AS messages")
+        count: db.prepare("SELECT (SELECT COUNT(*) FROM songs) AS songs, (SELECT COUNT(*) FROM messages) AS messages"),
+        coverUses: db.prepare("SELECT cover, COUNT(*) AS n FROM songs GROUP BY cover")
     };
 
-    // La page est sur un autre domaine (Vercel) : on l'autorise explicitement
+    // Photos que le serveur peut donner aux chansons : celles du site (assets/photos/)
+    async function sitePhotos() {
+        if (!siteRoot) return [];
+        const files = await readdir(join(siteRoot, "assets", "photos")).catch(() => []);
+        return files.map(file => "assets/photos/" + file).filter(cover => COVER.test(cover));
+    }
+
+    // La photo la moins utilisée, au hasard parmi les ex æquo : aucun doublon tant
+    // qu'il reste une photo libre, puis celles qui ne servent qu'une fois, etc.
+    function leastUsed(photos) {
+        const uses = new Map(photos.map(cover => [cover, 0]));
+        for (const { cover, n } of q.coverUses.all()) if (uses.has(cover)) uses.set(cover, n);
+        const least = Math.min(...uses.values());
+        const candidates = photos.filter(cover => uses.get(cover) === least);
+        return candidates[randomInt(candidates.length)];
+    }
+
+    // Les copies du site (GitHub Pages, Vercel) sont sur d'autres domaines : on les autorise explicitement
     function cors(req) {
         const origin = req.headers.origin;
         return origin && allowed.has(origin) ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : {};
@@ -244,17 +262,22 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
 
             case "POST /api/songs": {
                 const body = await readJson(req);
+                // Le serveur choisit la photo ; sans photos de site (tests), il prend celle proposée par la page
+                const photos = await sitePhotos();
+                const proposed = typeof body.cover === "string" && COVER.test(body.cover) ? body.cover : null;
                 const song = {
                     id: randomUUID(),
                     name: text(body.name, 200),
                     url: webUrl(body.url),
                     sharedBy: person(body.sharedBy),
-                    cover: typeof body.cover === "string" && COVER.test(body.cover) ? body.cover : null,
+                    cover: photos.length ? "" : proposed,
                     createdAt: new Date().toISOString()
                 };
-                const invalid = ["name", "url", "sharedBy", "cover"].find(key => !song[key]);
+                const invalid = ["name", "url", "sharedBy"].find(key => !song[key]) ?? (song.cover === null && "cover");
                 if (invalid) throw new HttpError(400, "invalid_" + invalid);
                 if (!canWrite(ipOf(req))) throw new HttpError(429, "too_many");
+                // Choix et ajout sans attente entre les deux : deux ajouts simultanés ne prennent pas la même photo libre
+                if (photos.length) song.cover = leastUsed(photos);
                 q.addSong.run(song.id, song.name, song.url, song.sharedBy, song.cover, song.createdAt);
                 broadcast("song", song);
                 return send(res, 201, { song }, headers);

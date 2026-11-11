@@ -40,61 +40,8 @@ async function api(path, body) {
 }
 
 // ---------------------------------------------------
-// 3)  Données locales (pochettes) et helpers
+// 3)  Helpers
 // ---------------------------------------------------
-const covers = [
-    "assets/photos/image.png",
-    "assets/photos/image copy.png",
-    "assets/photos/image copy 2.png",
-    "assets/photos/image copy 3.png",
-    "assets/photos/image copy 4.png",
-    "assets/photos/image copy 5.png",
-    "assets/photos/image copy 6.png",
-    "assets/photos/image copy 7.png",
-    "assets/photos/image copy 8.png",
-    "assets/photos/image copy 9.png",
-    "assets/photos/image copy 10.png",
-    "assets/photos/image copy 11.png",
-    "assets/photos/image copy 12.png",
-    "assets/photos/image copy 13.png",
-    "assets/photos/image copy 14.png",
-    "assets/photos/image copy 15.png",
-    "assets/photos/image copy 16.png",
-    "assets/photos/image copy 17.png",
-    "assets/photos/image copy 18.png",
-    "assets/photos/image copy 19.png",
-    "assets/photos/image copy 20.png",
-    "assets/photos/image copy 21.png",
-    "assets/photos/image copy 22.png",
-    "assets/photos/image copy 23.png",
-    "assets/photos/image copy 24.png",
-    "assets/photos/image copy 25.png",
-    "assets/photos/image copy 26.png",
-    "assets/photos/image copy 27.png",
-    "assets/photos/image copy 28.png",
-    "assets/photos/image copy 29.png",
-    "assets/photos/image copy 30.png",
-    "assets/photos/image copy 31.png",
-    "assets/photos/image copy 32.png",
-    "assets/photos/image copy 33.png",
-    "assets/photos/image copy 34.png",
-    "assets/photos/image copy 35.png",
-    "assets/photos/image copy 36.png",
-    "assets/photos/image copy 37.png",
-    "assets/photos/image copy 38.png",
-    "assets/photos/image copy 39.png",
-    "assets/photos/image copy 40.png",
-    "assets/photos/image copy 41.png",
-    "assets/photos/image copy 42.png",
-    "assets/photos/image copy 43.png",
-    "assets/photos/image copy 44.png",
-    "assets/photos/image copy 45.png",
-    "assets/photos/image copy 46.png",
-    "assets/photos/image copy 47.png",
-    "assets/photos/image copy 48.png",
-    "assets/photos/image copy 49.png",
-];
-const randCover = () => covers[Math.floor(Math.random() * covers.length)];
 
 // Les photos d'origine sont lourdes : on affiche leur miniature
 // (même nom, en .webp, dans assets/covers/)
@@ -201,7 +148,7 @@ function createSong(s, isNew) {
 
     // Miniature, ou photo d'origine si la miniature n'existe pas
     const img = li.querySelector("img");
-    const cover = s.cover || covers[0];
+    const cover = s.cover || "assets/photos/image.png";
     img.onerror = () => {
         img.onerror = null;
         img.src = cover;
@@ -515,7 +462,8 @@ form.onsubmit = async e => {
     submitBtn.disabled = true;
     submitBtn.textContent = "Ajout…";
     try {
-        const { song } = await api("/api/songs", { name, url: url.href, sharedBy, cover: randCover() });
+        // la photo est choisie par le serveur (la moins utilisée)
+        const { song } = await api("/api/songs", { name, url: url.href, sharedBy });
         addSong(song);
         urlInput.value = "";
         nameInput.value = "";

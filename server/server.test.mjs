@@ -85,6 +85,32 @@ test("le site : fichiers, cache et rien en dehors du dossier", async () => {
     rmSync(tmp, { recursive: true, force: true });
 });
 
+test("photos : la moins utilisée d'abord, jamais de doublon tant qu'il en reste de libres", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lastlink-"));
+    const photos = join(tmp, "assets", "photos");
+    mkdirSync(photos, { recursive: true });
+    for (const file of ["image.png", "image copy.png", "image copy 2.png", "notes.txt"]) writeFileSync(join(photos, file), "x");
+
+    const { db, post } = await start(undefined, tmp);
+    // une chanson déjà là utilise « image.png »
+    importSongs(db, [{
+        id: "old", name: "Ancienne", url: "https://x.com/a", sharedBy: "Iman",
+        cover: "assets/photos/image.png", createdAt: "2025-01-01T00:00:00.000Z"
+    }]);
+
+    const covers = [];
+    for (let i = 0; i < 5; i++) {
+        // la photo proposée par la page est ignorée : c'est le serveur qui choisit
+        const res = await post("/api/songs", { ...SONG, name: "Chanson " + i, cover: "assets/photos/image copy 49.png" });
+        assert.equal(res.status, 201);
+        covers.push((await res.json()).song.cover.replace("assets/photos/", ""));
+    }
+    // d'abord les deux photos libres, puis les trois à égalité (une fois chacune)
+    assert.deepEqual(covers.slice(0, 2).sort(), ["image copy 2.png", "image copy.png"]);
+    assert.deepEqual(covers.slice(2).sort(), ["image copy 2.png", "image copy.png", "image.png"]);
+    rmSync(tmp, { recursive: true, force: true });
+});
+
 test("ajout et liste des chansons, la plus récente d'abord", async () => {
     const { base, post } = await start();
     const first = await post("/api/songs", SONG);
