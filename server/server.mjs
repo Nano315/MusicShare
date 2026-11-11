@@ -167,7 +167,7 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
         return candidates[randomInt(candidates.length)];
     }
 
-    // Les copies du site (GitHub Pages, Vercel) sont sur d'autres domaines : on les autorise explicitement
+    // La copie du site sur GitHub Pages est sur un autre domaine : on l'autorise explicitement
     function cors(req) {
         const origin = req.headers.origin;
         return origin && allowed.has(origin) ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : {};

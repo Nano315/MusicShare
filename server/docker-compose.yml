@@ -1,6 +1,6 @@
 # Compose de production — homelab : ~/services/lastlink/
 # LastLink : le site et son serveur (chansons + chat) sur https://lastlink.nanodev.app
-# (tunnel Cloudflare) + http://homelab:8136. Copies du site : GitHub Pages et Vercel.
+# (tunnel Cloudflare) + http://homelab:8136. Copie du site : GitHub Pages.
 services:
   lastlink:
     build: .
@@ -9,8 +9,8 @@ services:
     restart: unless-stopped
     environment:
       STATIC_DIR: /srv/site
-      # adresses des pages autorisées à écrire : le site lui-même, puis ses copies
-      ALLOWED_ORIGINS: https://lastlink.nanodev.app,http://homelab:8136,https://nano315.github.io,https://musicshare-blush.vercel.app
+      # adresses des pages autorisées à écrire : le site lui-même, puis sa copie GitHub Pages
+      ALLOWED_ORIGINS: https://lastlink.nanodev.app,http://homelab:8136,https://nano315.github.io
     ports:
       - "8136:8136"           # LAN + Tailscale ; internet via cloudflared (réseau climhub_default)
     volumes:
