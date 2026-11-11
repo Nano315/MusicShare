@@ -2,15 +2,18 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb, createApp } from "./server.mjs";
 import { toSong, importSongs } from "./migrate-firestore.mjs";
 
 const FRONT = "https://front.test";
 const servers = [];
 
-async function start(limits = { perIp: 1000, total: 1000 }) {
+async function start(limits = { perIp: 1000, total: 1000 }, staticDir = "") {
     const db = openDb(":memory:");
-    const server = createApp({ db, origins: [FRONT], frontUrl: FRONT + "/", limits });
+    const server = createApp({ db, origins: [FRONT], staticDir, limits });
     await new Promise(done => server.listen(0, "127.0.0.1", done));
     servers.push({ server, db });
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -37,15 +40,49 @@ const SONG = {
     cover: "assets/photos/image copy 12.png"
 };
 
-test("santé et redirection vers le site", async () => {
+test("santé, et aucun fichier servi sans dossier de site", async () => {
     const { base } = await start();
     assert.deepEqual(await (await fetch(base + "/api/health")).json(), { ok: true, songs: 0, messages: 0 });
-
-    const res = await fetch(base + "/", { redirect: "manual" });
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get("location"), FRONT + "/");
-
+    assert.equal((await fetch(base + "/")).status, 404);
     assert.equal((await fetch(base + "/nope")).status, 404);
+});
+
+test("le site : fichiers, cache et rien en dehors du dossier", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lastlink-"));
+    const site = join(tmp, "site");
+    mkdirSync(join(site, "assets", "covers"), { recursive: true });
+    writeFileSync(join(site, "index.html"), "<!doctype html><title>LastLink</title>");
+    writeFileSync(join(site, "script.js"), "console.log(1);");
+    writeFileSync(join(site, "assets", "covers", "image copy 1.webp"), "webp");
+    writeFileSync(join(site, "notes.md"), "privé");
+    writeFileSync(join(tmp, "secret.html"), "hors du site");
+
+    const { base } = await start(undefined, site);
+    const home = await fetch(base + "/");
+    assert.equal(home.status, 200);
+    assert.equal(home.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.equal(home.headers.get("cache-control"), "no-cache");
+    assert.equal(await home.text(), "<!doctype html><title>LastLink</title>");
+
+    // même fichier inchangé : 304 sans corps
+    const again = await fetch(base + "/index.html", { headers: { "If-None-Match": home.headers.get("etag") } });
+    assert.equal(again.status, 304);
+
+    const js = await fetch(base + "/script.js?v=4");
+    assert.equal(js.headers.get("content-type"), "text/javascript; charset=utf-8");
+    const cover = await fetch(base + "/assets/covers/image%20copy%201.webp");
+    assert.equal(cover.headers.get("content-type"), "image/webp");
+    assert.equal(cover.headers.get("cache-control"), "public, max-age=604800");
+
+    const head = await fetch(base + "/", { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+
+    for (const [path, status] of [["/..%2fsecret.html", 404], ["/notes.md", 404], ["/assets", 404], ["/api/nope", 404], ["/%E0%A4%A", 400]]) {
+        assert.equal((await fetch(base + path)).status, status, path);
+    }
+    assert.equal((await fetch(base + "/", { method: "POST" })).status, 404);
+    rmSync(tmp, { recursive: true, force: true });
 });
 
 test("ajout et liste des chansons, la plus récente d'abord", async () => {

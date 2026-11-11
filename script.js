@@ -24,10 +24,9 @@ Promise.all([
 // ---------------------------------------------------
 // 2)  Serveur LastLink (homelab) : chansons + messages
 // ---------------------------------------------------
-// En local (tests), on parle au serveur lancé sur la machine
-const API = ["localhost", "127.0.0.1"].includes(location.hostname)
-    ? "http://localhost:8136"
-    : "https://lastlink.nanodev.app";
+// Le site est servi par le serveur LastLink lui-même : l'API est à la même adresse.
+// Les copies du site sur GitHub Pages et Vercel appellent le homelab.
+const API = /(^|\.)(github\.io|vercel\.app)$/.test(location.hostname) ? "https://lastlink.nanodev.app" : "";
 
 async function api(path, body) {
     const res = await fetch(API + path, body && {

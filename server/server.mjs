@@ -1,12 +1,13 @@
-// Serveur de LastLink : les chansons et le chat, rangés dans SQLite et envoyés
-// en direct aux pages ouvertes (Server-Sent Events).
+// Serveur de LastLink : sert le site, et les chansons et le chat, rangés dans
+// SQLite et envoyés en direct aux pages ouvertes (Server-Sent Events).
 // node:http + node:sqlite (Node 24), aucune dépendance.
 
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createReadStream, mkdirSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PEOPLE = ["Valentin", "Iman"];
@@ -14,6 +15,18 @@ const MAX_BODY = 16 * 1024;
 const MAX_STREAMS = 200;
 const MESSAGES_SHOWN = 300;
 const COVER = /^assets\/photos\/image( copy( \d{1,3})?)?\.png$/;
+
+// Fichiers du site que le serveur accepte d'envoyer (tout autre type : 404)
+const TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".webp": "image/webp",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml"
+};
 
 // ---------------------------------------------------
 // 1)  Base SQLite (mêmes champs que l'ancienne collection Firestore)
@@ -115,8 +128,9 @@ function limiter({ perIp, total }) {
 // ---------------------------------------------------
 // 3)  Serveur HTTP
 // ---------------------------------------------------
-export function createApp({ db, origins = [], frontUrl = "", limits = { perIp: 10, total: 60 } }) {
+export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 10, total: 60 } }) {
     const allowed = new Set(origins);
+    const siteRoot = staticDir && resolve(staticDir);
     const canWrite = limiter(limits);
     const streams = new Set();
 
@@ -170,6 +184,39 @@ export function createApp({ db, origins = [], frontUrl = "", limits = { perIp: 1
         res.on("close", () => streams.delete(res));   // page fermée ou réseau coupé
     }
 
+    // Le site lui-même : index.html, script.js, styles.css, assets/
+    async function serveFile(req, res, pathname) {
+        let path;
+        try {
+            path = decodeURIComponent(pathname);
+        } catch {
+            throw new HttpError(400, "bad_path");
+        }
+        if (path.endsWith("/")) path += "index.html";
+        const file = normalize(join(siteRoot, path));
+        const type = TYPES[extname(file).toLowerCase()];
+        // jamais rien en dehors du dossier du site (ex. /..%2f…)
+        const info = type && file.startsWith(siteRoot + sep) ? await stat(file).catch(() => null) : null;
+        if (!info?.isFile()) throw new HttpError(404, "not_found");
+
+        const etag = `W/"${info.size.toString(36)}-${Math.floor(info.mtimeMs).toString(36)}"`;
+        // Les images bougent peu ; le reste est revérifié à chaque visite (304 si rien n'a changé)
+        const cache = path.startsWith("/assets/") ? "public, max-age=604800" : "no-cache";
+        if (req.headers["if-none-match"] === etag) {
+            res.writeHead(304, { ETag: etag, "Cache-Control": cache });
+            return res.end();
+        }
+        res.writeHead(200, {
+            "Content-Type": type,
+            "Content-Length": info.size,
+            ETag: etag,
+            "Cache-Control": cache,
+            "X-Content-Type-Options": "nosniff"
+        });
+        if (req.method === "HEAD") return res.end();
+        createReadStream(file).on("error", () => res.destroy()).pipe(res);
+    }
+
     const ipOf = req => req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
 
     async function route(req, res, headers) {
@@ -189,11 +236,6 @@ export function createApp({ db, origins = [], frontUrl = "", limits = { perIp: 1
         }
 
         switch (`${req.method} ${pathname}`) {
-            case "GET /":
-                if (!frontUrl) break;
-                res.writeHead(302, { Location: frontUrl });
-                return res.end();
-
             case "GET /api/health":
                 return send(res, 200, { ok: true, ...q.count.get() }, headers);
 
@@ -240,6 +282,9 @@ export function createApp({ db, origins = [], frontUrl = "", limits = { perIp: 1
             case "GET /api/events":
                 return openStream(req, res, headers);
         }
+        if (siteRoot && (req.method === "GET" || req.method === "HEAD") && !pathname.startsWith("/api/")) {
+            return serveFile(req, res, pathname);
+        }
         throw new HttpError(404, "not_found");
     }
 
@@ -273,7 +318,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const server = createApp({
         db,
         origins: (process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean),
-        frontUrl: process.env.FRONT_URL || ""
+        staticDir: process.env.STATIC_DIR || ""
     });
     const port = Number(process.env.PORT || 8136);
     server.listen(port, () => console.log(`LastLink écoute sur le port ${port}`));
