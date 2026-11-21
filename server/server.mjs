@@ -157,12 +157,6 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
         return files.map(file => "assets/photos/" + file).filter(cover => COVER.test(cover));
     }
 
-    // Ordre de la galerie : "image.png", "image copy.png", puis "image copy 2.png", "image copy 3.png"…
-    function photoRank(cover) {
-        const [, copy, n] = cover.match(/image( copy(?: (\d+))?)?\.png$/);
-        return !copy ? 0 : n ? Number(n) + 1 : 1;
-    }
-
     // La photo la moins utilisée, au hasard parmi les ex æquo : aucun doublon tant
     // qu'il reste une photo libre, puis celles qui ne servent qu'une fois, etc.
     function leastUsed(photos) {
@@ -307,9 +301,6 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
                 broadcast("message", message);
                 return send(res, 201, { message }, headers);
             }
-
-            case "GET /api/photos":
-                return send(res, 200, { photos: (await sitePhotos()).sort((a, b) => photoRank(a) - photoRank(b)) }, headers);
 
             case "GET /api/events":
                 return openStream(req, res, headers);

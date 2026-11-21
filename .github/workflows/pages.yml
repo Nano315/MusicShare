@@ -28,7 +28,7 @@ jobs:
       - name: Garder seulement les fichiers du site
         run: |
           mkdir _site
-          cp -r index.html script.js styles.css galerie.html galerie.js assets _site/
+          cp -r index.html script.js styles.css assets _site/
 
       - uses: actions/upload-pages-artifact@v3
         with:
