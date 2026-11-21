@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb, createApp } from "./server.mjs";
+import { openDb, createApp, stripGps } from "./server.mjs";
 import { toSong, importSongs } from "./migrate-firestore.mjs";
 
 const FRONT = "https://front.test";
@@ -108,6 +108,107 @@ test("photos : la moins utilisée d'abord, jamais de doublon tant qu'il en reste
     // d'abord les deux photos libres, puis les trois à égalité (une fois chacune)
     assert.deepEqual(covers.slice(0, 2).sort(), ["image copy 2.png", "image copy.png"]);
     assert.deepEqual(covers.slice(2).sort(), ["image copy 2.png", "image copy.png", "image.png"]);
+    rmSync(tmp, { recursive: true, force: true });
+});
+
+// Un « JPEG » minimal avec un bloc EXIF (TIFF little-endian) : l'orientation dans IFD0,
+// et un répertoire GPS avec une latitude (3 fractions)
+function jpegWithGps() {
+    const tiff = Buffer.alloc(80);
+    tiff.write("II", 0, "latin1");
+    tiff.writeUInt16LE(42, 2);
+    tiff.writeUInt32LE(8, 4);                                   // IFD0 à l'octet 8
+    tiff.writeUInt16LE(2, 8);                                   // 2 entrées
+    tiff.writeUInt16LE(0x0112, 10);                             // Orientation = 6 (photo en portrait)
+    tiff.writeUInt16LE(3, 12);
+    tiff.writeUInt32LE(1, 14);
+    tiff.writeUInt16LE(6, 18);
+    tiff.writeUInt16LE(0x8825, 22);                             // GPSInfo → répertoire GPS à l'octet 38
+    tiff.writeUInt16LE(4, 24);
+    tiff.writeUInt32LE(1, 26);
+    tiff.writeUInt32LE(38, 30);
+    tiff.writeUInt16LE(1, 38);                                  // GPS : 1 entrée
+    tiff.writeUInt16LE(0x0002, 40);                             // GPSLatitude, 3 RATIONAL à l'octet 56
+    tiff.writeUInt16LE(5, 42);
+    tiff.writeUInt32LE(3, 44);
+    tiff.writeUInt32LE(56, 48);
+    [45, 1, 46, 1, 12, 1].forEach((value, i) => tiff.writeUInt32LE(value, 56 + i * 4));
+    const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), tiff]);
+    const app1 = Buffer.from([0xff, 0xe1, 0, 0]);
+    app1.writeUInt16BE(exif.length + 2, 2);
+    return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, exif, Buffer.from([0xff, 0xda, 0, 2, 0x11, 0x22, 0xff, 0xd9])]);
+}
+
+test("photos : les coordonnées GPS sont effacées, le reste est gardé", () => {
+    const original = jpegWithGps();
+    const cleaned = stripGps(Buffer.from(original));
+    const tiff = cleaned.indexOf("Exif\0\0", 0, "latin1") + 6;
+    assert.equal(cleaned.length, original.length);              // l'image n'a pas bougé
+    assert.equal(cleaned.readUInt16LE(tiff + 18), 6);           // orientation intacte
+    assert.equal(cleaned.readUInt16LE(tiff + 22), 0x8825);      // le répertoire GPS existe encore…
+    assert.equal(cleaned.readUInt16LE(tiff + 38), 0);           // … mais vide
+    assert.ok(cleaned.subarray(tiff + 40, tiff + 80).every(byte => byte === 0));   // entrée et latitude effacées
+    assert.deepEqual(stripGps(Buffer.from("pas une image")), Buffer.from("pas une image"));
+});
+
+test("photos ajoutées : envoi, miniature, galerie et pochettes", async () => {
+    const { base, post } = await start();
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100, 7)]);
+    const upload = (body, query = "", headers = {}) => fetch(base + "/api/photos" + query, {
+        method: "POST", headers: { "Content-Type": "image/jpeg", ...headers }, body
+    });
+
+    const sent = await upload(jpeg, "?par=Iman");
+    assert.equal(sent.status, 201);
+    const { photo } = await sent.json();
+    assert.match(photo.cover, /^api\/photos\/[0-9a-f-]{36}$/);
+    assert.equal(photo.addedBy, "Iman");
+
+    // l'originale, octet pour octet, gardée en cache pour de bon
+    const original = await fetch(`${base}/${photo.cover}`);
+    assert.equal(original.headers.get("content-type"), "image/jpeg");
+    assert.equal(original.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.deepEqual(Buffer.from(await original.arrayBuffer()), jpeg);
+
+    // pas encore de miniature : l'originale à la place, sans cache ; puis la miniature, une seule fois
+    assert.equal((await fetch(`${base}/${photo.cover}/mini`)).headers.get("cache-control"), "no-cache");
+    const mini = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(20, 1)]);
+    const putMini = body => fetch(`${base}/${photo.cover}/mini`, { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body });
+    assert.equal((await putMini(Buffer.alloc(600 * 1024, 1))).status, 413);
+    assert.equal((await putMini(mini)).status, 204);
+    assert.equal((await putMini(mini)).status, 409);
+    assert.deepEqual(Buffer.from(await (await fetch(`${base}/${photo.cover}/mini`)).arrayBuffer()), mini);
+
+    // refusés : pas une image, autre site, photo inconnue
+    assert.equal((await upload(Buffer.from("<svg onload=alert(1)>"))).status, 415);
+    assert.equal((await upload(jpeg, "", { Origin: "https://ailleurs.test" })).status, 403);
+    assert.equal((await fetch(base + "/api/photos/00000000-0000-0000-0000-000000000000")).status, 404);
+
+    // dans la galerie, en premier
+    const { photos } = await (await fetch(base + "/api/photos")).json();
+    assert.deepEqual(photos.map(p => p.cover), [photo.cover]);
+
+    // et dans le tirage des pochettes : deux chansons, deux photos jamais utilisées
+    const second = (await (await upload(jpeg)).json()).photo;
+    assert.equal(second.addedBy, null);
+    const covers = [];
+    for (let i = 0; i < 2; i++) covers.push((await (await post("/api/songs", { ...SONG, name: "Avec photo " + i })).json()).song.cover);
+    assert.deepEqual(covers.sort(), [photo.cover, second.cover].sort());
+});
+
+test("liste des photos pour la galerie, dans l'ordre", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lastlink-"));
+    const photos = join(tmp, "assets", "photos");
+    mkdirSync(photos, { recursive: true });
+    for (const file of ["image copy 10.png", "image copy 2.png", "image.png", "image copy.png", "notes.txt"]) {
+        writeFileSync(join(photos, file), "x");
+    }
+    const { base } = await start(undefined, tmp);
+    const { photos: list } = await (await fetch(base + "/api/photos")).json();
+    assert.deepEqual(list.map(photo => photo.cover), ["image.png", "image copy.png", "image copy 2.png", "image copy 10.png"].map(file => "assets/photos/" + file));
+
+    const bare = await start();                         // sans dossier de site : rien
+    assert.deepEqual(await (await fetch(bare.base + "/api/photos")).json(), { photos: [] });
     rmSync(tmp, { recursive: true, force: true });
 });
 
