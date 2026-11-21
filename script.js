@@ -61,34 +61,28 @@ function parseUrl(text) {
     }
 }
 
-// "aujourd’hui", "hier", "il y a 3 jours", puis "12 mars" (+ l'année si besoin)
-const relative = new Intl.RelativeTimeFormat("fr", { numeric: "auto" });
+// Le jour : "aujourd’hui", "hier", "jeudi", puis "12 mars" (+ l'année si besoin)
 const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const daysAgo = date => Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
 const sameYear = date => date.getFullYear() === new Date().getFullYear();
+const hourFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
+const fullFormat = new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeStyle: "short" });
 
-function formatDate(date) {
+function dayLabel(date, month = "long") {
     const days = daysAgo(date);
-    if (days < 7) return relative.format(-Math.max(days, 0), "day");
-    return date.toLocaleDateString("fr-FR", {
-        day: "numeric",
-        month: "long",
-        year: sameYear(date) ? undefined : "numeric"
-    });
+    if (days <= 0) return "aujourd’hui";
+    if (days === 1) return "hier";
+    if (days < 7) return date.toLocaleDateString("fr-FR", { weekday: "long" });
+    return date.toLocaleDateString("fr-FR", { day: "numeric", month, year: sameYear(date) ? undefined : "numeric" });
 }
 
-// Heure des messages : "14:32", "hier, 14:32", "lundi, 14:32", puis "12 mars, 14:32"
-const hourFormat = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
+// Chansons : "hier à 01:50", "jeudi à 22:57", "12 septembre 2025 à 16:47"
+const formatDate = date => `${dayLabel(date)} à ${hourFormat.format(date)}`;
 
+// Messages, plus court : "14:32" aujourd'hui, sinon "hier, 14:32", "lundi, 14:32", "12 mars, 14:32"
 function formatTime(date) {
-    const days = daysAgo(date);
     const hour = hourFormat.format(date);
-    if (days <= 0) return hour;
-    if (days === 1) return `hier, ${hour}`;
-    const day = days < 7
-        ? date.toLocaleDateString("fr-FR", { weekday: "long" })
-        : date.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: sameYear(date) ? undefined : "numeric" });
-    return `${day}, ${hour}`;
+    return daysAgo(date) <= 0 ? hour : `${dayLabel(date, "short")}, ${hour}`;
 }
 
 const byId = (parent, id) => parent.querySelector(`[data-id="${CSS.escape(id)}"]`);
@@ -172,6 +166,7 @@ function createSong(s, isNew) {
     if (!Number.isNaN(date.getTime())) {
         time.textContent = formatDate(date);
         time.dateTime = date.toISOString();
+        time.title = fullFormat.format(date);       // date complète au survol
     }
     return li;
 }
@@ -216,6 +211,7 @@ function createMessage(m) {
     const time = li.querySelector("time");
     time.textContent = formatTime(date);
     time.dateTime = date.toISOString();
+    time.title = fullFormat.format(date);
     return li;
 }
 

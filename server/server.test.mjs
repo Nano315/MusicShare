@@ -111,6 +111,22 @@ test("photos : la moins utilisée d'abord, jamais de doublon tant qu'il en reste
     rmSync(tmp, { recursive: true, force: true });
 });
 
+test("liste des photos pour la galerie, dans l'ordre", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lastlink-"));
+    const photos = join(tmp, "assets", "photos");
+    mkdirSync(photos, { recursive: true });
+    for (const file of ["image copy 10.png", "image copy 2.png", "image.png", "image copy.png", "notes.txt"]) {
+        writeFileSync(join(photos, file), "x");
+    }
+    const { base } = await start(undefined, tmp);
+    const { photos: list } = await (await fetch(base + "/api/photos")).json();
+    assert.deepEqual(list, ["image.png", "image copy.png", "image copy 2.png", "image copy 10.png"].map(file => "assets/photos/" + file));
+
+    const bare = await start();                         // sans dossier de site : rien
+    assert.deepEqual(await (await fetch(bare.base + "/api/photos")).json(), { photos: [] });
+    rmSync(tmp, { recursive: true, force: true });
+});
+
 test("ajout et liste des chansons, la plus récente d'abord", async () => {
     const { base, post } = await start();
     const first = await post("/api/songs", SONG);
