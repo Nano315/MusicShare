@@ -18,7 +18,7 @@
 
     <!-- ?v= : augmenter le numéro (ici et pour script.js en bas) à chaque modif
          du CSS ou du JS, sinon les navigateurs gardent l'ancienne version en cache -->
-    <link rel="stylesheet" href="styles.css?v=5" />
+    <link rel="stylesheet" href="styles.css?v=6" />
   </head>
   <body>
     <!-- Header / Logo -->
@@ -70,6 +70,18 @@
                 </label>
               </div>
             </fieldset>
+
+            <!-- En réponse à une chanson (bouton « Répondre » d'une chanson) -->
+            <div id="chat-reply" class="chat-reply" hidden>
+              <img class="chat-reply-cover" width="40" height="40" alt="" />
+              <p class="chat-reply-text">
+                <span class="chat-reply-label">En réponse à</span>
+                <span class="chat-reply-title"></span>
+              </p>
+              <button type="button" id="chat-reply-cancel" class="chat-reply-cancel" aria-label="Ne plus répondre à cette chanson">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              </button>
+            </div>
 
             <div class="chat-compose">
               <label class="visually-hidden" for="chat-text">Message</label>
@@ -162,6 +174,20 @@
       </section>
     </main>
 
-    <script type="module" src="script.js?v=9"></script>
+    <!-- Modifier le titre d'une chanson (sur ses propres chansons) -->
+    <dialog id="edit-dialog" class="edit-dialog" aria-labelledby="edit-heading">
+      <form id="edit-form" novalidate>
+        <h2 id="edit-heading">Modifier le titre</h2>
+        <label class="visually-hidden" for="edit-name">Titre</label>
+        <input id="edit-name" type="text" maxlength="200" autocomplete="off" />
+        <p id="edit-error" class="form-status is-error" role="status"></p>
+        <div class="edit-actions">
+          <button type="button" id="edit-cancel" class="edit-cancel">Annuler</button>
+          <button type="submit" id="edit-save" class="edit-save">Enregistrer</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="script.js?v=10"></script>
   </body>
 </html>

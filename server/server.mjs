@@ -64,7 +64,17 @@ export function openDb(path) {
             added_by TEXT,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS likes (
+            song_id TEXT NOT NULL,
+            liked_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (song_id, liked_by)
+        );
     `);
+    // Message en réponse à une chanson (25 nov. 2026) : colonne ajoutée aux bases existantes
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'song_id'").get()) {
+        db.exec("ALTER TABLE messages ADD COLUMN song_id TEXT");
+    }
     return db;
 }
 
@@ -217,12 +227,19 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
         addSong: db.prepare("INSERT INTO songs (id, name, url, shared_by, cover, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
         // Les derniers messages, remis dans l'ordre de lecture (du plus ancien au plus récent)
         messages: db.prepare(`
-            SELECT id, text, sentBy, createdAt FROM (
-                SELECT id, text, sent_by AS sentBy, created_at AS createdAt, rowid AS r
+            SELECT id, text, sentBy, songId, createdAt FROM (
+                SELECT id, text, sent_by AS sentBy, song_id AS songId, created_at AS createdAt, rowid AS r
                 FROM messages ORDER BY created_at DESC, rowid DESC LIMIT ?
             ) ORDER BY createdAt, r
         `),
-        addMessage: db.prepare("INSERT INTO messages (id, text, sent_by, created_at) VALUES (?, ?, ?, ?)"),
+        addMessage: db.prepare("INSERT INTO messages (id, text, sent_by, song_id, created_at) VALUES (?, ?, ?, ?, ?)"),
+        // Une chanson, son titre, et les « j'aime » (de l'autre personne)
+        song: db.prepare(`SELECT ${SONG} FROM songs WHERE id = ?`),
+        rename: db.prepare("UPDATE songs SET name = ? WHERE id = ?"),
+        allLikes: db.prepare("SELECT song_id AS songId, liked_by AS likedBy FROM likes ORDER BY created_at"),
+        likesOf: db.prepare("SELECT liked_by AS likedBy FROM likes WHERE song_id = ? ORDER BY created_at"),
+        like: db.prepare("INSERT OR IGNORE INTO likes (song_id, liked_by, created_at) VALUES (?, ?, ?)"),
+        unlike: db.prepare("DELETE FROM likes WHERE song_id = ? AND liked_by = ?"),
         count: db.prepare("SELECT (SELECT COUNT(*) FROM songs) AS songs, (SELECT COUNT(*) FROM messages) AS messages"),
         coverUses: db.prepare("SELECT cover, COUNT(*) AS n FROM songs GROUP BY cover"),
         // Photos ajoutées depuis la galerie : le fichier d'origine et sa miniature
@@ -235,6 +252,41 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
     };
 
     const canUpload = limiter({ perIp: 20, total: 100 });
+    const canReact = limiter({ perIp: 60, total: 300 });   // titres modifiés et « j'aime »
+
+    const withLikes = song => ({ ...song, likes: q.likesOf.all(song.id).map(({ likedBy }) => likedBy) });
+
+    // Modifier le titre : seulement la personne qui a partagé la chanson
+    async function renameSong(req, res, headers, id) {
+        const body = await readJson(req);
+        const song = q.song.get(id);
+        if (!song) throw new HttpError(404, "not_found");
+        const name = text(body.name, 200);
+        if (!name) throw new HttpError(400, "invalid_name");
+        if (person(body.by) !== song.sharedBy) throw new HttpError(403, "not_yours");
+        if (!canReact(ipOf(req))) throw new HttpError(429, "too_many");
+        q.rename.run(name, id);
+        const updated = withLikes(q.song.get(id));
+        broadcast("song-update", updated);
+        return send(res, 200, { song: updated }, headers);
+    }
+
+    // Aimer (ou ne plus aimer) une chanson : seulement celles de l'autre personne
+    async function likeSong(req, res, headers, id) {
+        const body = await readJson(req);
+        const song = q.song.get(id);
+        if (!song) throw new HttpError(404, "not_found");
+        const by = person(body.by);
+        if (!by) throw new HttpError(400, "invalid_by");
+        if (by === song.sharedBy) throw new HttpError(400, "own_song");
+        if (typeof body.liked !== "boolean") throw new HttpError(400, "invalid_liked");
+        if (!canReact(ipOf(req))) throw new HttpError(429, "too_many");
+        if (body.liked) q.like.run(id, by, new Date().toISOString());
+        else q.unlike.run(id, by);
+        const updated = withLikes(song);
+        broadcast("song-update", updated);
+        return send(res, 200, { song: updated }, headers);
+    }
 
     // Photos du site (assets/photos/)
     async function sitePhotos() {
@@ -390,12 +442,21 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
         if (photoPath && (req.method === "GET" || req.method === "HEAD")) return servePhoto(req, res, headers, photoPath[1], !!photoPath[2]);
         if (photoPath?.[2] && req.method === "PUT") return saveMini(req, res, headers, photoPath[1]);
 
+        // Une chanson : /api/songs/<id>/title (nouveau titre) ou /api/songs/<id>/like (« j'aime »)
+        const songPath = pathname.match(/^\/api\/songs\/([A-Za-z0-9-]{1,64})\/(title|like)$/);
+        if (songPath && req.method === "POST") {
+            return songPath[2] === "title" ? renameSong(req, res, headers, songPath[1]) : likeSong(req, res, headers, songPath[1]);
+        }
+
         switch (`${req.method} ${pathname}`) {
             case "GET /api/health":
                 return send(res, 200, { ok: true, ...q.count.get() }, headers);
 
-            case "GET /api/songs":
-                return send(res, 200, { songs: q.songs.all() }, headers);
+            case "GET /api/songs": {
+                const likes = new Map();
+                for (const { songId, likedBy } of q.allLikes.all()) likes.set(songId, [...likes.get(songId) ?? [], likedBy]);
+                return send(res, 200, { songs: q.songs.all().map(song => ({ ...song, likes: likes.get(song.id) ?? [] })) }, headers);
+            }
 
             case "POST /api/songs": {
                 const body = await readJson(req);
@@ -416,6 +477,7 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
                 // Choix et ajout sans attente entre les deux : deux ajouts simultanés ne prennent pas la même photo libre
                 if (photos.length) song.cover = leastUsed(photos);
                 q.addSong.run(song.id, song.name, song.url, song.sharedBy, song.cover, song.createdAt);
+                song.likes = [];
                 broadcast("song", song);
                 return send(res, 201, { song }, headers);
             }
@@ -429,12 +491,14 @@ export function createApp({ db, origins = [], staticDir = "", limits = { perIp: 
                     id: randomUUID(),
                     text: text(body.text, 1000),
                     sentBy: person(body.sentBy),
+                    songId: body.songId ?? null,        // en réponse à une chanson (facultatif)
                     createdAt: new Date().toISOString()
                 };
-                const invalid = ["text", "sentBy"].find(key => !message[key]);
+                const invalid = ["text", "sentBy"].find(key => !message[key])
+                    ?? (message.songId !== null && !(typeof message.songId === "string" && q.song.get(message.songId)) && "songId");
                 if (invalid) throw new HttpError(400, "invalid_" + invalid);
                 if (!canWrite(ipOf(req))) throw new HttpError(429, "too_many");
-                q.addMessage.run(message.id, message.text, message.sentBy, message.createdAt);
+                q.addMessage.run(message.id, message.text, message.sentBy, message.songId, message.createdAt);
                 broadcast("message", message);
                 return send(res, 201, { message }, headers);
             }

@@ -121,6 +121,13 @@ const chatSender = chatForm.querySelector("fieldset");
 const chatText = document.getElementById("chat-text");
 const chatSend = document.getElementById("chat-send");
 const chatError = document.getElementById("chat-error");
+const chatReply = document.getElementById("chat-reply");
+
+const editDialog = document.getElementById("edit-dialog");
+const editForm = document.getElementById("edit-form");
+const editName = document.getElementById("edit-name");
+const editError = document.getElementById("edit-error");
+const editSave = document.getElementById("edit-save");
 
 // ---------------------------------------------------
 // 5)  Rendu des chansons
@@ -137,10 +144,21 @@ function createSong(s, isNew) {
         <span class="song-meta">
           <span class="song-sharer"></span>
           <time class="song-date"></time>
+          <span class="song-liked"></span>
         </span>
       </span>
-      <svg class="song-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>
     </a>
+    <div class="song-actions">
+      <button type="button" class="song-action song-like" aria-pressed="false" aria-label="J’aime" title="J’aime">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20Z"/></svg>
+      </button>
+      <button type="button" class="song-action song-edit" aria-label="Modifier le titre" title="Modifier le titre">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4ZM13.5 6.5l4 4"/></svg>
+      </button>
+      <button type="button" class="song-action song-reply" aria-label="Répondre dans le chat" title="Répondre dans le chat">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7 5 12l5 5M5 12h9a5 5 0 0 1 5 5v1"/></svg>
+      </button>
+    </div>
   `;
 
     // Miniature, ou photo d'origine si la miniature n'existe pas
@@ -158,12 +176,6 @@ function createSong(s, isNew) {
     if (url) link.href = url.href;
     else link.removeAttribute("href");
 
-    li.querySelector(".song-title").textContent = s.name;
-
-    const sharer = li.querySelector(".song-sharer");
-    sharer.textContent = s.sharedBy ?? "";
-    sharer.dataset.sharer = s.sharedBy ?? "";
-
     const date = new Date(s.createdAt);
     const time = li.querySelector(".song-date");
     if (!Number.isNaN(date.getTime())) {
@@ -171,7 +183,38 @@ function createSong(s, isNew) {
         time.dateTime = date.toISOString();
         time.title = fullFormat.format(date);       // date complète au survol
     }
+
+    fillSong(li, s);
     return li;
+}
+
+// Titre, personne et « j'aime » (rappelé quand la chanson change, ici ou sur l'autre appareil)
+function fillSong(li, s) {
+    li.querySelector(".song-title").textContent = s.name;
+    li.dataset.sharer = s.sharedBy ?? "";
+
+    const sharer = li.querySelector(".song-sharer");
+    sharer.textContent = s.sharedBy ?? "";
+    sharer.dataset.sharer = s.sharedBy ?? "";
+
+    const likes = s.likes ?? [];
+    li.dataset.liked = likes.length > 0;
+    const liked = li.querySelector(".song-liked");
+    liked.textContent = likes.length ? "♥ " + likes.join(", ") : "";
+    liked.title = likes.length ? `${likes.join(" et ")} aime cette chanson` : "";
+    li.querySelector(".song-like").setAttribute("aria-pressed", likes.includes(me));
+}
+
+// Chanson modifiée (titre, « j'aime ») : la liste, la copie locale et les messages qui la citent suivent
+function updateSong(s) {
+    const index = state.songs.findIndex(song => song.id === s.id);
+    if (index < 0) return;
+    state.songs[index] = s;
+    saveCache();
+    const li = byId(list, s.id);
+    if (li) fillSong(li, s);
+    for (const title of chatList.querySelectorAll(`.msg-song[data-song="${CSS.escape(s.id)}"] .msg-song-title`)) title.textContent = s.name;
+    if (replyTo === s.id) showReply();
 }
 
 function renderSongs(songs) {
@@ -209,6 +252,7 @@ function createMessage(m) {
     li.innerHTML = `<p class="msg-text"></p><p class="msg-meta"><span class="msg-from"></span><time class="msg-time"></time></p>`;
     li.querySelector(".msg-text").textContent = m.text;
     li.querySelector(".msg-from").textContent = m.sentBy;
+    if (m.songId) li.prepend(createQuote(m.songId));
 
     const date = new Date(m.createdAt);
     const time = li.querySelector("time");
@@ -216,6 +260,27 @@ function createMessage(m) {
     time.dateTime = date.toISOString();
     time.title = fullFormat.format(date);
     return li;
+}
+
+// La chanson à laquelle répond un message : sa pochette et son titre, à toucher pour la retrouver
+function createQuote(songId) {
+    const song = state.songs.find(s => s.id === songId);
+    const quote = document.createElement("button");
+    quote.type = "button";
+    quote.className = "msg-song";
+    quote.dataset.song = songId;
+    quote.innerHTML = `<img class="msg-song-cover" width="32" height="32" alt=""><span class="msg-song-title"></span>`;
+    quote.querySelector(".msg-song-title").textContent = song ? song.name : "Chanson introuvable";
+    quote.title = song ? "Voir la chanson dans la liste" : "";
+
+    const img = quote.querySelector("img");
+    const cover = song?.cover || "assets/photos/image.png";
+    img.onerror = () => {
+        img.onerror = null;
+        img.src = srcOf(cover);
+    };
+    img.src = thumbOf(cover);
+    return quote;
 }
 
 // Plusieurs messages d'affilée de la même personne : son prénom une seule fois
@@ -269,6 +334,7 @@ const queued = [];
 function apply(type, item) {
     if (syncing) return queued.push([type, item]);
     if (type === "song") addSong(item);
+    else if (type === "song-update") updateSong(item);
     else addMessage(item);
 }
 
@@ -313,6 +379,7 @@ function connect() {
     const live = new EventSource(API + "/api/events");
     live.addEventListener("song", e => apply("song", JSON.parse(e.data)));
     live.addEventListener("message", e => apply("message", JSON.parse(e.data)));
+    live.addEventListener("song-update", e => apply("song-update", JSON.parse(e.data)));
     // Connexion revenue (réseau, téléphone en veille…) : on rattrape ce qui a été manqué
     live.addEventListener("open", () => {
         if (interrupted) sync();
@@ -335,6 +402,8 @@ function setMe(person, remember = true) {
     me = person;
     for (const radio of [...form.elements.sharer, ...chatForm.elements.sender]) radio.checked = radio.value === person;
     chat.dataset.me = person;                   // ses propres messages passent à droite
+    list.dataset.me = person;                   // « j'aime » sur les chansons de l'autre, « modifier » sur les siennes
+    for (const s of state.songs) byId(list, s.id)?.querySelector(".song-like").setAttribute("aria-pressed", (s.likes ?? []).includes(person));
     if (!remember) return;
     try {
         localStorage.setItem(SHARER_KEY, person);
@@ -498,10 +567,11 @@ chatForm.onsubmit = async e => {
 
     chatSend.disabled = true;
     try {
-        const { message } = await api("/api/messages", { text, sentBy });
+        const { message } = await api("/api/messages", { text, sentBy, ...(replyTo ? { songId: replyTo } : {}) });
         addMessage(message);
         chatText.value = "";
         fitText();
+        clearReply();
         chatError.textContent = "";
     } catch (err) {
         console.error(err);
@@ -530,6 +600,119 @@ function fitText() {
 chatText.addEventListener("input", () => {
     chatError.textContent = "";
     fitText();
+});
+
+// ---------------------------------------------------
+// 12 bis)  Sur une chanson : « j'aime », modifier le titre, répondre dans le chat
+// ---------------------------------------------------
+let replyTo = null;                             // chanson à laquelle répond le message en cours
+let editing = null;                             // chanson dont on modifie le titre
+
+list.addEventListener("click", e => {
+    const button = e.target.closest(".song-action");
+    const song = button && state.songs.find(s => s.id === button.closest(".song").dataset.id);
+    if (!song) return;
+    if (button.classList.contains("song-like")) toggleLike(song, button);
+    else if (button.classList.contains("song-edit")) openEdit(song);
+    else replyToSong(song);
+});
+
+// « J'aime » : affiché tout de suite, remis comme avant si le serveur refuse
+async function toggleLike(song, button) {
+    if (!me || button.disabled) return;
+    const liked = button.getAttribute("aria-pressed") !== "true";
+    button.disabled = true;
+    button.setAttribute("aria-pressed", liked);
+    try {
+        updateSong((await api(`/api/songs/${encodeURIComponent(song.id)}/like`, { by: me, liked })).song);
+    } catch (err) {
+        console.error(err);
+        button.setAttribute("aria-pressed", !liked);
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function openEdit(song) {
+    editing = song;
+    editName.value = song.name;
+    editError.textContent = "";
+    editDialog.showModal();
+    editName.select();
+}
+
+editForm.onsubmit = async e => {
+    e.preventDefault();
+    const name = editName.value.trim();
+    if (!name) {
+        editError.textContent = "Donne un titre à la chanson.";
+        editName.focus();
+        return;
+    }
+    if (name === editing.name) return editDialog.close();
+
+    editSave.disabled = true;
+    try {
+        updateSong((await api(`/api/songs/${encodeURIComponent(editing.id)}/title`, { name, by: me })).song);
+        editDialog.close();
+    } catch (err) {
+        console.error(err);
+        editError.textContent = err.status === 403
+            ? "Seule la personne qui a partagé la chanson peut changer son titre."
+            : err.status === 429
+                ? "Beaucoup de changements d’un coup : réessaie dans une minute."
+                : "Le titre n’a pas pu être changé. Vérifie ta connexion puis réessaie.";
+    } finally {
+        editSave.disabled = false;
+    }
+};
+
+document.getElementById("edit-cancel").addEventListener("click", () => editDialog.close());
+editName.addEventListener("input", () => {
+    editError.textContent = "";
+});
+
+// « Répondre » : on remonte au chat, la chanson s'affiche au-dessus du message
+function replyToSong(song) {
+    replyTo = song.id;
+    showReply();
+    chat.scrollIntoView({ block: "start" });
+    chatText.focus({ preventScroll: true });
+}
+
+function showReply() {
+    const song = state.songs.find(s => s.id === replyTo);
+    chatReply.hidden = !song;
+    if (!song) return;
+    const img = chatReply.querySelector("img");
+    const cover = song.cover || "assets/photos/image.png";
+    img.onerror = () => {
+        img.onerror = null;
+        img.src = srcOf(cover);
+    };
+    img.src = thumbOf(cover);
+    chatReply.querySelector(".chat-reply-title").textContent = song.name;
+}
+
+function clearReply() {
+    replyTo = null;
+    chatReply.hidden = true;
+}
+
+document.getElementById("chat-reply-cancel").addEventListener("click", () => {
+    clearReply();
+    chatText.focus();
+});
+
+// Toucher la chanson citée dans un message : on la retrouve dans la liste
+chatList.addEventListener("click", e => {
+    const quote = e.target.closest(".msg-song");
+    const li = quote && byId(list, quote.dataset.song);
+    if (!li) return;
+    li.scrollIntoView({ block: "center" });
+    li.classList.remove("is-found");
+    void li.offsetWidth;                        // relance la surbrillance si on retouche
+    li.classList.add("is-found");
 });
 
 // ---------------------------------------------------

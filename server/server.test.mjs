@@ -224,7 +224,7 @@ test("ajout et liste des chansons, la plus récente d'abord", async () => {
     await post("/api/songs", { ...SONG, name: "  Deuxième  ", sharedBy: "Valentin", url: "https://youtu.be/xyz" });
     const { songs } = await (await fetch(base + "/api/songs")).json();
     assert.deepEqual(songs.map(s => s.name), ["Deuxième", "Nuit étoilée"]);
-    assert.deepEqual(Object.keys(songs[0]).sort(), ["cover", "createdAt", "id", "name", "sharedBy", "url"]);
+    assert.deepEqual(Object.keys(songs[0]).sort(), ["cover", "createdAt", "id", "likes", "name", "sharedBy", "url"]);
 });
 
 test("refuse les chansons invalides", async () => {
@@ -256,7 +256,8 @@ test("messages : ajout, nettoyage et ordre de lecture", async () => {
     }
     const { messages } = await (await fetch(base + "/api/messages")).json();
     assert.deepEqual(messages.map(m => [m.text, m.sentBy]), [["Coucou", "Valentin"], ["Salut\n\ntoi", "Iman"]]);
-    assert.deepEqual(Object.keys(messages[0]).sort(), ["createdAt", "id", "sentBy", "text"]);
+    assert.deepEqual(Object.keys(messages[0]).sort(), ["createdAt", "id", "sentBy", "songId", "text"]);
+    assert.equal(messages[0].songId, null);
 
     for (const [body, error] of [
         [{ text: " ", sentBy: "Iman" }, "invalid_text"],
@@ -267,6 +268,71 @@ test("messages : ajout, nettoyage et ordre de lecture", async () => {
         assert.equal(res.status, 400);
         assert.equal((await res.json()).error, error);
     }
+});
+
+test("titre modifiable par la personne qui a partagé, « j'aime » sur les chansons de l'autre", async () => {
+    const { base, post } = await start();
+    const stream = await fetch(base + "/api/events");
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+
+    const { song } = await (await post("/api/songs", SONG)).json();       // partagée par Iman
+    assert.deepEqual(song.likes, []);
+    const rename = body => post(`/api/songs/${song.id}/title`, body);
+    const like = body => post(`/api/songs/${song.id}/like`, body);
+
+    // le titre : seulement Iman, et pas vide
+    assert.equal((await rename({ name: "Autre titre", by: "Valentin" })).status, 403);
+    assert.equal((await rename({ name: "   ", by: "Iman" })).status, 400);
+    assert.equal((await post("/api/songs/inconnue/title", { name: "X", by: "Iman" })).status, 404);
+    const renamed = await rename({ name: "  Nuit étoilée (live)  ", by: "Iman" });
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json()).song.name, "Nuit étoilée (live)");
+
+    // « j'aime » : seulement Valentin (pas sur sa propre chanson), une fois, et réversible
+    assert.equal((await like({ by: "Iman", liked: true })).status, 400);
+    assert.equal((await like({ by: "Valentin", liked: "oui" })).status, 400);
+    assert.deepEqual((await (await like({ by: "Valentin", liked: true })).json()).song.likes, ["Valentin"]);
+    assert.deepEqual((await (await like({ by: "Valentin", liked: true })).json()).song.likes, ["Valentin"]);
+    let { songs } = await (await fetch(base + "/api/songs")).json();
+    assert.deepEqual([songs[0].name, songs[0].likes], ["Nuit étoilée (live)", ["Valentin"]]);
+    assert.deepEqual((await (await like({ by: "Valentin", liked: false })).json()).song.likes, []);
+    ({ songs } = await (await fetch(base + "/api/songs")).json());
+    assert.deepEqual(songs[0].likes, []);
+
+    // les pages ouvertes sont prévenues de chaque changement
+    while ((received.match(/event: song-update/g) ?? []).length < 4) received += decoder.decode((await reader.read()).value);
+    await reader.cancel();
+    assert.match(received, /event: song-update\ndata: \{[^\n]*"name":"Nuit étoilée \(live\)"/);
+});
+
+test("réponse à une chanson depuis le chat", async () => {
+    const { base, post } = await start();
+    const { song } = await (await post("/api/songs", SONG)).json();
+    const reply = await post("/api/messages", { text: "Trop bien celle-là", sentBy: "Valentin", songId: song.id });
+    assert.equal(reply.status, 201);
+    assert.equal((await reply.json()).message.songId, song.id);
+    assert.equal((await post("/api/messages", { text: "Hein ?", sentBy: "Iman", songId: "inconnue" })).status, 400);
+    assert.equal((await post("/api/messages", { text: "Hein ?", sentBy: "Iman", songId: 42 })).status, 400);
+
+    const { messages } = await (await fetch(base + "/api/messages")).json();
+    assert.deepEqual(messages.map(m => [m.text, m.songId]), [["Trop bien celle-là", song.id]]);
+});
+
+test("une base d'avant les réponses reçoit la nouvelle colonne", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lastlink-"));
+    const path = join(dir, "ancienne.db");
+    const old = openDb(path);
+    old.exec("CREATE TABLE ancienne_copie AS SELECT * FROM messages; DROP TABLE messages;");
+    old.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, text TEXT NOT NULL, sent_by TEXT NOT NULL, created_at TEXT NOT NULL)");
+    old.exec("INSERT INTO messages VALUES ('m1', 'Coucou', 'Iman', '2026-11-01T10:00:00.000Z')");
+    old.close();
+
+    const db = openDb(path);                                    // comme au redémarrage du serveur
+    assert.deepEqual(db.prepare("SELECT id, text, song_id AS songId FROM messages").all().map(row => ({ ...row })), [{ id: "m1", text: "Coucou", songId: null }]);
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
 });
 
 test("CORS : seul le site est autorisé", async () => {
